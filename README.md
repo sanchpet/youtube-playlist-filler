@@ -83,13 +83,14 @@ Against today's playlist (2134 items) and ten channels:
 | Run | Cost |
 | --- | --- |
 | normal | 43 pages of the target playlist + 10 channel pages + ~1 `videos.list` ≈ **54 units** |
-| `--full-reconcile` | ≈ **92 units** |
+| `--full-reconcile` | 43 pages of the target playlist + 55 pages across the ten uploads playlists (2735 videos) + ~1 `videos.list` ≈ **99 units** |
 
 Both are noise. Reads are not worth economising on; the only meaningful spend is inserts, at 50
 units each, which puts the hard ceiling at roughly **196 inserts a day**.
 
-`search.list` is never called: it costs 100 units and draws on a separate daily allowance, and the
-uploads playlist answers the same question for one unit.
+`search.list` is never called. It costs one unit per call like the other reads, but it draws on a
+separate allowance of only 100 calls a day, and the uploads playlist answers the same question from
+the main budget.
 
 `-max-inserts` (default 100) is the fuse. It exists so a bug in the diff — one that decides every
 video is new — costs one capped run rather than the day. Each run logs `estimated_units`.
