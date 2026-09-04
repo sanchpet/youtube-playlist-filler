@@ -1,0 +1,32 @@
+# Toolchain for this repo. mise-first: everything the build and CI need is pinned here, so a
+# checkout on another machine reproduces the same binaries.
+[tools]
+go = "1.26.5"
+golangci-lint = "2.12.2"
+# Repo-wide git hook runner. Config: .pre-commit-config.yaml. postinstall wires up the git hook
+# and downloads the hook environments, so a fresh clone is guarded from its first commit rather
+# than from whenever someone remembers.
+pre-commit = { version = "4.6.1", postinstall = "mise exec -- pre-commit install --install-hooks || true" }
+
+[hooks]
+enter = "pre-commit install 2>/dev/null || true"
+
+[tasks.build]
+description = "Compile every package"
+run = "go build ./..."
+
+[tasks.test]
+description = "Run the test suite"
+run = "go test -race ./..."
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run ./..."
+
+[tasks.fmt]
+description = "Format Go sources"
+run = "gofmt -w ."
+
+[tasks.ci]
+description = "Everything CI runs"
+depends = ["lint", "test", "build"]
