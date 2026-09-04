@@ -22,10 +22,13 @@ import (
 	"google.golang.org/api/youtube/v3"
 
 	"github.com/sanchpet/youtube-playlist-filler/internal/config"
-	"github.com/sanchpet/youtube-playlist-filler/internal/feed"
 	"github.com/sanchpet/youtube-playlist-filler/internal/reconcile"
 	"github.com/sanchpet/youtube-playlist-filler/internal/ytapi"
 )
+
+// dailyQuota is the API's budget, logged beside the run's estimate so the number is readable
+// without knowing it.
+const dailyQuota = 10000
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -53,28 +56,20 @@ func run(ctx context.Context, args []string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("youtube service: %w", err)
 	}
-	client := ytapi.New(svc, log)
-
-	// The two upload sources differ only in what they cost and how far back they see. The feed is
-	// free and stops at 15 entries; the uploads playlist is complete and charges a unit per fifty
-	// videos, which is why it is a weekly schedule rather than the hourly one.
-	var src reconcile.Source = &feed.Client{}
-	if cfg.FullReconcile {
-		src = ytapi.PlaylistSource{Client: client}
-	}
 
 	log.Info("run starting",
 		"playlist", cfg.PlaylistID, "channels", len(cfg.Channels),
 		"band", fmt.Sprintf("[%s, %s]", cfg.MinDuration, cfg.MaxDuration),
 		"max_inserts", cfg.MaxInserts, "dry_run", cfg.DryRun, "full_reconcile", cfg.FullReconcile)
 
-	res, err := reconcile.Run(ctx, client, src, reconcile.Options{
-		PlaylistID: cfg.PlaylistID,
-		Channels:   cfg.Channels,
-		Min:        cfg.MinDuration,
-		Max:        cfg.MaxDuration,
-		MaxInserts: cfg.MaxInserts,
-		DryRun:     cfg.DryRun,
+	res, err := reconcile.Run(ctx, ytapi.New(svc, log), reconcile.Options{
+		PlaylistID:    cfg.PlaylistID,
+		Channels:      cfg.Channels,
+		Min:           cfg.MinDuration,
+		Max:           cfg.MaxDuration,
+		MaxInserts:    cfg.MaxInserts,
+		DryRun:        cfg.DryRun,
+		FullReconcile: cfg.FullReconcile,
 	}, log)
 
 	// The summary is logged whether or not the run failed: a partial run has still spent quota and
@@ -82,7 +77,7 @@ func run(ctx context.Context, args []string, log *slog.Logger) error {
 	log.Info("run finished",
 		"playlist_size", res.PlaylistSize, "candidates", res.Candidates, "in_band", res.InBand,
 		"inserted", res.Inserted, "deferred", res.Deferred, "playlist_full", res.PlaylistFull,
-		"dry_run", res.DryRun, "estimated_units", res.Units, "daily_quota", 10000)
+		"dry_run", res.DryRun, "estimated_units", res.Units, "daily_quota", dailyQuota)
 
 	return err
 }

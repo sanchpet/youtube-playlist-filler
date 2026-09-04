@@ -9,6 +9,9 @@
 // adding a video that is already there returns success and leaves the playlist holding it twice.
 // Reading the playlist first is the only thing standing between a scheduled job and a playlist
 // full of duplicates.
+//
+// Discovery and deduplication now both run through playlistItems.list — one endpoint, one failure
+// mode, one thing to be right about.
 package reconcile
 
 import (
@@ -21,16 +24,18 @@ import (
 	"github.com/sanchpet/youtube-playlist-filler/internal/ytapi"
 )
 
-// Source yields the recent uploads of one channel: the public feed for the hourly run, the
-// uploads playlist for the weekly full reconcile. It returns the number of billed API calls it
-// made, which is zero for the feed.
-type Source interface {
-	VideoIDs(ctx context.Context, channelID string) (ids []string, calls int, err error)
-}
+// channelPages is how deep a normal run reads each channel's uploads playlist. One page is the
+// fifty newest videos, which is weeks of headroom at any cadence these channels publish at, and
+// makes the per-channel cost a single unit.
+const channelPages = 1
 
-// Playlist is the target playlist: read in full, then appended to.
-type Playlist interface {
-	PlaylistVideoIDs(ctx context.Context, playlistID string) (ids []string, calls int, err error)
+// API is the YouTube surface a run needs. One interface, not two: discovering a channel's videos
+// and reading the playlist they are compared against are the same call against different playlists,
+// and the only thing that differs is how deep it reads.
+type API interface {
+	// PlaylistVideoIDs lists a playlist newest first, reading at most maxPages pages
+	// (ytapi.AllPages for all of them), and reports the billed calls it made.
+	PlaylistVideoIDs(ctx context.Context, playlistID string, maxPages int) (ids []string, calls int, err error)
 	Durations(ctx context.Context, ids []string) (map[string]time.Duration, int, error)
 	Insert(ctx context.Context, playlistID, videoID string) error
 }
@@ -40,10 +45,11 @@ type Options struct {
 	PlaylistID string
 	Channels   []string
 
-	// Min and Max are the closed duration band a video has to fall inside. Both bounds are load
-	// bearing: the lower one is what keeps Shorts and trailers out, and an implementation that
-	// only enforces the ceiling looks correct on every long video it rejects while admitting
-	// everything short.
+	// Min and Max are the closed duration band a video has to fall inside, and since discovery
+	// moved to the uploads playlist they are the *only* thing keeping Shorts out — the Atom feed's
+	// /shorts/ link hint went away with the feed, and an uploads playlist lists Shorts alongside
+	// everything else with nothing to mark them. A ceiling-only filter is not a weaker version of
+	// this: it is the defect that put 232 eleven-second Shorts into this playlist.
 	Min, Max time.Duration
 
 	// MaxInserts caps how many videos one run will add. It is a quota fuse, not a policy: at
@@ -53,6 +59,13 @@ type Options struct {
 	MaxInserts int
 
 	DryRun bool
+
+	// FullReconcile walks every page of every uploads playlist instead of just the newest one.
+	// A normal run sees a bounded window and nothing tells it what fell out the back of that
+	// window, so this is the pass that recovers anything a burst of publishing pushed past the
+	// first fifty. It costs a unit per fifty videos per channel, which is why it is a weekly
+	// schedule beside the normal one rather than the normal one.
+	FullReconcile bool
 }
 
 // Result is what a run did, for the summary line.
@@ -80,9 +93,9 @@ func InBand(d, minD, maxD time.Duration) bool {
 // Diff returns the candidates that are not already in the playlist, in the order given and with
 // repeats removed.
 //
-// Keyed on the video id and nothing else. The same video carries different published and updated
-// timestamps in the feed and in the API, so any key including them would report every video as new
-// on every run.
+// Keyed on the video id and nothing else — the one identity both sides of the comparison agree
+// on. Publication timestamps are not: they differ between endpoints for the same video and change
+// when a video is edited, so a key involving them would report everything as new on every run.
 func Diff(candidates []string, present map[string]struct{}) []string {
 	out := make([]string, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
@@ -102,13 +115,15 @@ func Diff(candidates []string, present map[string]struct{}) []string {
 // Run performs one reconciliation.
 //
 // A channel that cannot be read does not stop the others — its videos are simply not considered
-// this time — but the run still ends in an error, so a feed that has been failing for a week is
+// this time — but the run still ends in an error, so a channel that has been failing for a week is
 // visible rather than merely quiet.
-func Run(ctx context.Context, pl Playlist, src Source, opts Options, log *slog.Logger) (Result, error) {
+func Run(ctx context.Context, api API, opts Options, log *slog.Logger) (Result, error) {
 	var res Result
 	res.DryRun = opts.DryRun
 
-	present, calls, err := pl.PlaylistVideoIDs(ctx, opts.PlaylistID)
+	// AllPages, always. A short read here is not a smaller answer, it is a wrong one: the ids it
+	// failed to return are exactly the ids that would then be added a second time.
+	present, calls, err := api.PlaylistVideoIDs(ctx, opts.PlaylistID, ytapi.AllPages)
 	res.Units += calls * ytapi.CostList
 	if err != nil {
 		return res, fmt.Errorf("read playlist: %w", err)
@@ -118,21 +133,27 @@ func Run(ctx context.Context, pl Playlist, src Source, opts Options, log *slog.L
 	for _, id := range present {
 		inPlaylist[id] = struct{}{}
 	}
-	log.Info("playlist read", "playlist", opts.PlaylistID, "items", len(present), "distinct", len(inPlaylist))
+	log.Info("playlist read", "playlist", opts.PlaylistID, "items", len(present),
+		"distinct", len(inPlaylist), "pages", calls)
+
+	pages := channelPages
+	if opts.FullReconcile {
+		pages = ytapi.AllPages
+	}
 
 	var (
 		uploads    []string
 		sourceErrs []error
 	)
 	for _, ch := range opts.Channels {
-		ids, calls, err := src.VideoIDs(ctx, ch)
+		ids, calls, err := discover(ctx, api, ch, pages)
 		res.Units += calls * ytapi.CostList
 		if err != nil {
 			log.Error("channel unreadable", "channel", ch, "err", err)
 			sourceErrs = append(sourceErrs, err)
 			continue
 		}
-		log.Debug("channel read", "channel", ch, "videos", len(ids))
+		log.Debug("channel read", "channel", ch, "videos", len(ids), "pages", calls)
 		uploads = append(uploads, ids...)
 	}
 
@@ -140,7 +161,7 @@ func Run(ctx context.Context, pl Playlist, src Source, opts Options, log *slog.L
 	res.Candidates = len(candidates)
 	log.Info("candidates", "uploads", len(uploads), "new", len(candidates))
 
-	keep, calls, err := filterBand(ctx, pl, candidates, opts, log)
+	keep, calls, err := filterBand(ctx, api, candidates, opts, log)
 	res.Units += calls * ytapi.CostList
 	if err != nil {
 		return res, errors.Join(append(sourceErrs, err)...)
@@ -160,7 +181,7 @@ func Run(ctx context.Context, pl Playlist, src Source, opts Options, log *slog.L
 			res.Inserted++
 			continue
 		}
-		if err := pl.Insert(ctx, opts.PlaylistID, id); err != nil {
+		if err := api.Insert(ctx, opts.PlaylistID, id); err != nil {
 			res.Units += ytapi.CostInsert
 			if errors.Is(err, ytapi.ErrPlaylistFull) {
 				log.Error("playlist is full, stopping", "playlist", opts.PlaylistID,
@@ -179,16 +200,29 @@ func Run(ctx context.Context, pl Playlist, src Source, opts Options, log *slog.L
 	return res, errors.Join(sourceErrs...)
 }
 
+// discover lists a channel's recent uploads through its auto-generated uploads playlist.
+func discover(ctx context.Context, api API, channelID string, pages int) ([]string, int, error) {
+	uploads, err := ytapi.UploadsPlaylistID(channelID)
+	if err != nil {
+		return nil, 0, err
+	}
+	ids, calls, err := api.PlaylistVideoIDs(ctx, uploads, pages)
+	if err != nil {
+		return nil, calls, fmt.Errorf("channel %s: %w", channelID, err)
+	}
+	return ids, calls, nil
+}
+
 // filterBand looks up the duration of every candidate and keeps the ones inside the band. Batched
 // at the API's limit, because a per-video lookup costs the same unit each and there can be
-// hundreds of candidates on a first run.
-func filterBand(ctx context.Context, pl Playlist, candidates []string, opts Options, log *slog.Logger) ([]string, int, error) {
+// hundreds of candidates on a full pass.
+func filterBand(ctx context.Context, api API, candidates []string, opts Options, log *slog.Logger) ([]string, int, error) {
 	var (
 		keep  []string
 		calls int
 	)
 	for chunk := range batches(candidates, ytapi.BatchSize) {
-		durations, c, err := pl.Durations(ctx, chunk)
+		durations, c, err := api.Durations(ctx, chunk)
 		calls += c
 		if err != nil {
 			return nil, calls, fmt.Errorf("read durations: %w", err)
@@ -196,8 +230,8 @@ func filterBand(ctx context.Context, pl Playlist, candidates []string, opts Opti
 		for _, id := range chunk {
 			d, ok := durations[id]
 			if !ok {
-				// Deleted, private or blocked between the feed and this call. Not an error, and
-				// not something to add blind.
+				// Deleted, private or blocked between being listed and this call. Not an error,
+				// and not something to add blind.
 				log.Warn("video not returned by the api", "video", id)
 				continue
 			}

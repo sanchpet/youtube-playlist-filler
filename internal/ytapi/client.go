@@ -1,4 +1,4 @@
-// Package ytapi is the YouTube Data API v3 surface this service uses: reading a playlist, reading
+// Package ytapi is the YouTube Data API v3 surface this service uses: listing a playlist, reading
 // video durations, and adding an item to a playlist.
 //
 // Three things about that API shape everything here.
@@ -6,8 +6,7 @@
 // Cost. Reads are one unit each, playlistItems.insert is fifty, and the day's budget is ten
 // thousand — so a run's spending is dominated entirely by how many videos it adds, and the reads
 // that prevent a wrong add are effectively free. search.list is never called: it costs a hundred
-// units and comes out of a separate daily allowance, and the public feed answers the same question
-// for nothing.
+// units and comes out of a separate daily allowance.
 //
 // Idempotence. There is none. Inserting a video that is already in the playlist succeeds and
 // creates a second item pointing at the same video, so the playlist has to be read before it is
@@ -37,6 +36,10 @@ const (
 	// insert cap a quota control and the reads not worth economising on.
 	CostInsert = 50
 )
+
+// AllPages asks PlaylistVideoIDs to follow every nextPageToken. Any other value bounds the read
+// to that many pages.
+const AllPages = 0
 
 // pageSize is the API's own maximum for a list page. Fewer would cost the same per page and buy
 // more pages.
@@ -106,13 +109,18 @@ func (c *Client) do(ctx context.Context, op string, call func() error) error {
 	}
 }
 
-// PlaylistVideoIDs reads the whole playlist and returns the video ids in it, with the number of
-// billed calls that cost.
+// PlaylistVideoIDs reads a playlist newest first and returns the video ids in it, with the number
+// of billed calls that cost. maxPages bounds the read; AllPages follows every nextPageToken.
 //
-// This read is what makes the run idempotent, so it is never skipped and never partial: a page
-// that fails aborts the run rather than yielding a short set, because a short set is
-// indistinguishable from a playlist that is missing those videos and would have them re-added.
-func (c *Client) PlaylistVideoIDs(ctx context.Context, playlistID string) ([]string, int, error) {
+// It serves both halves of a run, and the bound is the only thing separating them. The target
+// playlist is always read with AllPages, because a short read of it is indistinguishable from a
+// playlist that is genuinely missing those videos and would have them added again. A channel's
+// uploads playlist is read one page deep on the normal schedule — fifty newest is far more than a
+// day's publishing — and with AllPages on the weekly pass.
+//
+// A page that fails aborts the whole read rather than yielding what it has, for the same reason:
+// a partial answer here is a wrong answer that looks like a valid one.
+func (c *Client) PlaylistVideoIDs(ctx context.Context, playlistID string, maxPages int) ([]string, int, error) {
 	var (
 		ids   []string
 		calls int
@@ -132,7 +140,7 @@ func (c *Client) PlaylistVideoIDs(ctx context.Context, playlistID string) ([]str
 		})
 		calls++
 		if err != nil {
-			return nil, calls, err
+			return nil, calls, fmt.Errorf("playlist %s: %w", playlistID, err)
 		}
 
 		for _, item := range resp.Items {
@@ -141,7 +149,7 @@ func (c *Client) PlaylistVideoIDs(ctx context.Context, playlistID string) ([]str
 			}
 			ids = append(ids, item.ContentDetails.VideoId)
 		}
-		if resp.NextPageToken == "" {
+		if resp.NextPageToken == "" || (maxPages != AllPages && calls >= maxPages) {
 			return ids, calls, nil
 		}
 		page = resp.NextPageToken
@@ -163,8 +171,8 @@ func UploadsPlaylistID(channelID string) (string, error) {
 // Durations reads contentDetails for up to BatchSize video ids and returns the duration of each.
 //
 // Ids that come back missing are omitted rather than defaulted: a video can be deleted, private or
-// region-blocked between the feed publishing it and this call, and giving it a duration of zero
-// would let a band with no lower bound treat it as a candidate.
+// region-blocked between being listed and this call, and giving it a duration of zero would let a
+// band with no lower bound treat it as a candidate.
 func (c *Client) Durations(ctx context.Context, ids []string) (map[string]time.Duration, int, error) {
 	if len(ids) == 0 {
 		return map[string]time.Duration{}, 0, nil
@@ -224,24 +232,4 @@ func (c *Client) Insert(ctx context.Context, playlistID, videoID string) error {
 		_, err := c.svc.PlaylistItems.Insert([]string{"snippet"}, item).Context(ctx).Do()
 		return err
 	})
-}
-
-// PlaylistSource enumerates a channel through its uploads playlist, for the full reconcile. It
-// costs a unit per page — roughly one per fifty videos the channel has ever published — against
-// the feed's nothing, which is why it is a weekly job and not the hourly one.
-type PlaylistSource struct {
-	Client *Client
-}
-
-// VideoIDs returns every video in a channel's uploads playlist.
-func (s PlaylistSource) VideoIDs(ctx context.Context, channelID string) ([]string, int, error) {
-	uploads, err := UploadsPlaylistID(channelID)
-	if err != nil {
-		return nil, 0, err
-	}
-	ids, calls, err := s.Client.PlaylistVideoIDs(ctx, uploads)
-	if err != nil {
-		return nil, calls, fmt.Errorf("channel %s: %w", channelID, err)
-	}
-	return ids, calls, nil
 }

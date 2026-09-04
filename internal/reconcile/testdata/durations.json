@@ -1,0 +1,455 @@
+{
+  "kind": "youtube#videoListResponse",
+  "items": [
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000025",
+      "contentDetails": {
+        "duration": "PT13S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "HUG00000036",
+      "contentDetails": {
+        "duration": "PT10H1M2S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000015",
+      "contentDetails": {
+        "duration": "PT15S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000032",
+      "contentDetails": {
+        "duration": "PT11S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000011",
+      "contentDetails": {
+        "duration": "PT15S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000049",
+      "contentDetails": {
+        "duration": "PT0H59M13S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000012",
+      "contentDetails": {
+        "duration": "PT14S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000017",
+      "contentDetails": {
+        "duration": "PT15S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000029",
+      "contentDetails": {
+        "duration": "PT14S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000030",
+      "contentDetails": {
+        "duration": "PT13S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000043",
+      "contentDetails": {
+        "duration": "PT1H57M59S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000039",
+      "contentDetails": {
+        "duration": "PT1H43M19S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000031",
+      "contentDetails": {
+        "duration": "PT12S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000009",
+      "contentDetails": {
+        "duration": "PT12S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000001",
+      "contentDetails": {
+        "duration": "PT12S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000047",
+      "contentDetails": {
+        "duration": "PT0H56M19S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000020",
+      "contentDetails": {
+        "duration": "PT15S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000013",
+      "contentDetails": {
+        "duration": "PT14S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000022",
+      "contentDetails": {
+        "duration": "PT13S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000044",
+      "contentDetails": {
+        "duration": "PT2H48M18S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000048",
+      "contentDetails": {
+        "duration": "PT2H24M7S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000023",
+      "contentDetails": {
+        "duration": "PT15S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000050",
+      "contentDetails": {
+        "duration": "PT1H30M48S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000008",
+      "contentDetails": {
+        "duration": "PT13S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000040",
+      "contentDetails": {
+        "duration": "PT0H51M26S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000019",
+      "contentDetails": {
+        "duration": "PT11S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000034",
+      "contentDetails": {
+        "duration": "PT11S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000002",
+      "contentDetails": {
+        "duration": "PT15S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000041",
+      "contentDetails": {
+        "duration": "PT2H40M21S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000018",
+      "contentDetails": {
+        "duration": "PT13S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "HUG00000037",
+      "contentDetails": {
+        "duration": "PT3H0M1S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000016",
+      "contentDetails": {
+        "duration": "PT14S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000045",
+      "contentDetails": {
+        "duration": "PT2H49M4S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000027",
+      "contentDetails": {
+        "duration": "PT11S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000028",
+      "contentDetails": {
+        "duration": "PT13S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000006",
+      "contentDetails": {
+        "duration": "PT14S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000003",
+      "contentDetails": {
+        "duration": "PT11S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000014",
+      "contentDetails": {
+        "duration": "PT11S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000033",
+      "contentDetails": {
+        "duration": "PT13S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000046",
+      "contentDetails": {
+        "duration": "PT2H56M43S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000038",
+      "contentDetails": {
+        "duration": "PT1H38M45S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000024",
+      "contentDetails": {
+        "duration": "PT14S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000007",
+      "contentDetails": {
+        "duration": "PT13S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "HUG00000035",
+      "contentDetails": {
+        "duration": "PT10H1M2S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000005",
+      "contentDetails": {
+        "duration": "PT14S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000004",
+      "contentDetails": {
+        "duration": "PT13S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "LNG00000042",
+      "contentDetails": {
+        "duration": "PT0H59M7S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000026",
+      "contentDetails": {
+        "duration": "PT14S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000010",
+      "contentDetails": {
+        "duration": "PT11S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "SHR00000021",
+      "contentDetails": {
+        "duration": "PT12S",
+        "definition": "hd",
+        "licensedContent": true
+      }
+    }
+  ]
+}
