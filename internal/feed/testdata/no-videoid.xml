@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns="http://www.w3.org/2005/Atom">
-  <title>An entry whose videoId sits in the wrong namespace</title>
-  <entry>
-    <id>yt:video:wrongns001</id>
-    <videoId>wrongns001</videoId>
-    <link rel="alternate" href="https://www.youtube.com/watch?v=wrongns001"/>
-  </entry>
-</feed>

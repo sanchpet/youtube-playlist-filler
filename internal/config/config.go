@@ -62,9 +62,9 @@ type Config struct {
 	MaxInserts  int
 
 	DryRun bool
-	// FullReconcile swaps the feed for the uploads playlist. The feed carries the 15 most recent
-	// entries and no watermark, so a channel that published a sixteenth video between two runs
-	// loses it silently and for good; this is how it comes back.
+	// FullReconcile walks every page of each channel's uploads playlist instead of only the
+	// newest one. A normal run reads a bounded window and has no way of telling what fell out the
+	// back of it, so this is the pass that recovers a burst of publishing.
 	FullReconcile bool
 }
 
@@ -134,7 +134,7 @@ func Load(args []string, out io.Writer) (*Config, error) {
 	fs.BoolVar(&c.DryRun, "dry-run", envB("YT_DRY_RUN"),
 		"do everything except the inserts, and log what would be added")
 	fs.BoolVar(&c.FullReconcile, "full-reconcile", envB("YT_FULL_RECONCILE"),
-		"enumerate each channel's uploads playlist instead of its feed: costs quota, recovers what the 15-entry feed dropped")
+		"walk every page of each channel's uploads playlist, not just the newest: costs quota, recovers what a bounded window missed")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err

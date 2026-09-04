@@ -2,11 +2,14 @@ package reconcile_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,9 +22,10 @@ const (
 	maxD = 3 * time.Hour
 )
 
-// Both bounds have to reject, and the floor is the one with history: a filter that only enforced
-// the ceiling let eleven-second Shorts into the playlist, because every Short is comfortably under
-// three hours. The band exists for the lower bound; the upper one is the easy half.
+// Both bounds have to reject, and since discovery moved to the uploads playlist the floor is the
+// only thing keeping Shorts out at all — an uploads playlist lists them with nothing to mark them.
+// A filter enforcing only the ceiling admits an eleven-second Short, because eleven seconds is
+// comfortably under three hours. That is not a hypothetical: it put 232 of them in the playlist.
 func TestInBandRejectsAtBothEnds(t *testing.T) {
 	cases := []struct {
 		name string
@@ -29,6 +33,7 @@ func TestInBandRejectsAtBothEnds(t *testing.T) {
 		want bool
 	}{
 		{"eleven-second short", 11 * time.Second, false},
+		{"fifteen-second short", 15 * time.Second, false},
 		{"two-minute teaser", 2 * time.Minute, false},
 		{"a second under the floor", minD - time.Second, false},
 		{"exactly the floor", minD, true},
@@ -67,28 +72,48 @@ func TestDiffOfAnAlreadyReconciledPlaylistIsEmpty(t *testing.T) {
 	}
 }
 
-// fakePlaylist is the API, minus the network. It records inserts so the test can prove the
-// service, not the API, is what stops a video being added twice.
-type fakePlaylist struct {
-	items     []string
+// fakeAPI is the API, minus the network: playlists as pages of fifty, so the page bound the two
+// schedules differ by is actually exercised. It records inserts, so a test can prove the service —
+// not the API — is what stops a video being added twice.
+type fakeAPI struct {
+	playlists map[string][]string
 	durations map[string]time.Duration
 	inserted  []string
 
-	listCalls     int
+	listed        map[string]int // playlist id -> pages served
 	durationCalls int
 	insertErr     func(videoID string) error
 	listErr       error
 }
 
-func (f *fakePlaylist) PlaylistVideoIDs(context.Context, string) ([]string, int, error) {
-	f.listCalls++
+const fakePageSize = 50
+
+func (f *fakeAPI) PlaylistVideoIDs(_ context.Context, playlistID string, maxPages int) ([]string, int, error) {
 	if f.listErr != nil {
 		return nil, 1, f.listErr
 	}
-	return slices.Clone(f.items), 1, nil
+	if f.listed == nil {
+		f.listed = map[string]int{}
+	}
+
+	all := f.playlists[playlistID]
+	var (
+		ids   []string
+		pages int
+	)
+	for start := 0; ; start += fakePageSize {
+		end := min(start+fakePageSize, len(all))
+		ids = append(ids, all[start:end]...)
+		pages++
+		if end >= len(all) || (maxPages != ytapi.AllPages && pages >= maxPages) {
+			break
+		}
+	}
+	f.listed[playlistID] += pages
+	return ids, pages, nil
 }
 
-func (f *fakePlaylist) Durations(_ context.Context, ids []string) (map[string]time.Duration, int, error) {
+func (f *fakeAPI) Durations(_ context.Context, ids []string) (map[string]time.Duration, int, error) {
 	f.durationCalls++
 	if len(ids) > ytapi.BatchSize {
 		return nil, 1, fmt.Errorf("batch of %d exceeds %d", len(ids), ytapi.BatchSize)
@@ -102,29 +127,38 @@ func (f *fakePlaylist) Durations(_ context.Context, ids []string) (map[string]ti
 	return out, 1, nil
 }
 
-func (f *fakePlaylist) Insert(_ context.Context, _, videoID string) error {
+func (f *fakeAPI) Insert(_ context.Context, playlistID, videoID string) error {
 	if f.insertErr != nil {
 		if err := f.insertErr(videoID); err != nil {
 			return err
 		}
 	}
-	// The real API is not idempotent: it would append this id whether or not it is already there.
-	f.items = append(f.items, videoID)
+	// The real API is not idempotent: it appends whether or not the video is already there.
+	f.playlists[playlistID] = append(f.playlists[playlistID], videoID)
 	f.inserted = append(f.inserted, videoID)
 	return nil
 }
 
-type fakeSource struct {
-	byChannel map[string][]string
-	calls     int
-	err       error
+func newFake(target []string) *fakeAPI {
+	return &fakeAPI{
+		playlists: map[string][]string{"PLtest": target},
+		durations: map[string]time.Duration{},
+	}
 }
 
-func (f *fakeSource) VideoIDs(_ context.Context, channelID string) ([]string, int, error) {
-	if f.err != nil {
-		return nil, f.calls, f.err
+// channel loads a channel's uploads playlist into the fake under the UU id the reconciler will
+// derive, which is also how the test proves it derives it.
+func (f *fakeAPI) channel(channelID string, ids []string, d time.Duration) {
+	uploads, err := ytapi.UploadsPlaylistID(channelID)
+	if err != nil {
+		panic(err)
 	}
-	return f.byChannel[channelID], f.calls, nil
+	f.playlists[uploads] = ids
+	for _, id := range ids {
+		if _, ok := f.durations[id]; !ok {
+			f.durations[id] = d
+		}
+	}
 }
 
 func discardLog() *slog.Logger {
@@ -142,31 +176,111 @@ func opts(o reconcile.Options) reconcile.Options {
 	return o
 }
 
-func TestRunAddsOnlyNewInBandVideos(t *testing.T) {
-	pl := &fakePlaylist{
-		items: []string{"already1"},
-		durations: map[string]time.Duration{
-			"already1": time.Hour,
-			"long1":    2 * time.Hour,
-			"short1":   11 * time.Second,
-			"huge1":    8 * time.Hour,
-			"long2":    minD,
-		},
-	}
-	src := &fakeSource{byChannel: map[string][]string{
-		"UC1": {"long1", "short1", "already1"},
-		"UC2": {"huge1", "long2"},
-	}}
+// A real page of a real uploads playlist, with the real distribution: mostly Shorts. Nothing in
+// the listing distinguishes them — the durations are the only signal there is.
+func loadUploadsFixture(t *testing.T) (ids []string, durations map[string]time.Duration) {
+	t.Helper()
 
-	res, err := reconcile.Run(t.Context(), pl, src, opts(reconcile.Options{
-		Channels: []string{"UC1", "UC2"},
+	var page struct {
+		Items []struct {
+			ContentDetails struct {
+				VideoID string `json:"videoId"`
+			} `json:"contentDetails"`
+		} `json:"items"`
+	}
+	var videos struct {
+		Items []struct {
+			ID             string `json:"id"`
+			ContentDetails struct {
+				Duration string `json:"duration"`
+			} `json:"contentDetails"`
+		} `json:"items"`
+	}
+	for name, into := range map[string]any{"uploads-page.json": &page, "durations.json": &videos} {
+		raw, err := os.ReadFile("testdata/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, into); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+
+	for _, it := range page.Items {
+		ids = append(ids, it.ContentDetails.VideoID)
+	}
+	durations = make(map[string]time.Duration, len(videos.Items))
+	for _, v := range videos.Items {
+		d, err := ytapi.ParseDuration(v.ContentDetails.Duration)
+		if err != nil {
+			t.Fatalf("fixture duration %q: %v", v.ContentDetails.Duration, err)
+		}
+		durations[v.ID] = d
+	}
+	if len(ids) != len(durations) {
+		t.Fatalf("fixture mismatch: %d listed, %d durations", len(ids), len(durations))
+	}
+	return ids, durations
+}
+
+// The end-to-end shape of the defect the band exists for, against a realistic page: 34 Shorts of
+// 11-15 seconds and 3 uploads past the ceiling have to be left behind, and every one of the 13
+// long-form videos taken.
+func TestRunKeepsShortsOutOfARealUploadsPage(t *testing.T) {
+	ids, durations := loadUploadsFixture(t)
+
+	api := newFake(nil)
+	api.durations = durations
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", ids, 0)
+
+	res, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels: []string{"UCoH2qJSyODQpBKsK63Moc6Q"},
 	}), discardLog())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if want := []string{"long1", "long2"}; !slices.Equal(pl.inserted, want) {
-		t.Errorf("inserted %v, want %v", pl.inserted, want)
+	var shorts, huge int
+	for _, id := range api.inserted {
+		switch {
+		case strings.HasPrefix(id, "SHR"):
+			shorts++
+		case strings.HasPrefix(id, "HUG"):
+			huge++
+		}
+	}
+	if shorts != 0 {
+		t.Errorf("%d Shorts reached the playlist; the lower bound is the only thing that stops them", shorts)
+	}
+	if huge != 0 {
+		t.Errorf("%d over-length uploads reached the playlist", huge)
+	}
+	if want := 13; res.InBand != want || len(api.inserted) != want {
+		t.Errorf("in band = %d, inserted = %d, want %d of the 50 listed", res.InBand, len(api.inserted), want)
+	}
+}
+
+func TestRunAddsOnlyNewInBandVideos(t *testing.T) {
+	api := newFake([]string{"already1"})
+	api.durations = map[string]time.Duration{
+		"already1": time.Hour,
+		"long1":    2 * time.Hour,
+		"short1":   11 * time.Second,
+		"huge1":    8 * time.Hour,
+		"long2":    minD,
+	}
+	api.channel("UC1aaaaaaaaaaaaaaaaaaaaa", []string{"long1", "short1", "already1"}, 0)
+	api.channel("UC2bbbbbbbbbbbbbbbbbbbbb", []string{"huge1", "long2"}, 0)
+
+	res, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels: []string{"UC1aaaaaaaaaaaaaaaaaaaaa", "UC2bbbbbbbbbbbbbbbbbbbbb"},
+	}), discardLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if want := []string{"long1", "long2"}; !slices.Equal(api.inserted, want) {
+		t.Errorf("inserted %v, want %v", api.inserted, want)
 	}
 	if res.Candidates != 4 {
 		t.Errorf("candidates = %d, want 4 (already1 is in the playlist)", res.Candidates)
@@ -174,76 +288,183 @@ func TestRunAddsOnlyNewInBandVideos(t *testing.T) {
 	if res.InBand != 2 {
 		t.Errorf("in band = %d, want 2", res.InBand)
 	}
-	// One list page + one videos.list batch + two inserts.
-	if want := 2*ytapi.CostList + 2*ytapi.CostInsert; res.Units != want {
+	// One page of the target playlist, one page per channel, one videos.list, two inserts.
+	if want := 4*ytapi.CostList + 2*ytapi.CostInsert; res.Units != want {
 		t.Errorf("units = %d, want %d", res.Units, want)
 	}
 }
 
+// Discovery goes through the channel's auto-generated uploads playlist, whose id is the channel id
+// with UC swapped for UU. Getting that wrong reads an empty or foreign playlist and finds nothing,
+// which looks exactly like a channel that has not published.
+func TestRunDiscoversThroughTheUploadsPlaylist(t *testing.T) {
+	api := newFake(nil)
+	api.durations = map[string]time.Duration{"long1": time.Hour}
+	api.playlists["UUoH2qJSyODQpBKsK63Moc6Q"] = []string{"long1"}
+
+	if _, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels: []string{"UCoH2qJSyODQpBKsK63Moc6Q"},
+	}), discardLog()); err != nil {
+		t.Fatal(err)
+	}
+
+	if want := []string{"long1"}; !slices.Equal(api.inserted, want) {
+		t.Errorf("inserted %v, want %v", api.inserted, want)
+	}
+}
+
+func TestRunRejectsAChannelIDItCannotDerive(t *testing.T) {
+	api := newFake(nil)
+
+	_, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels: []string{"PLnotachannel"},
+	}), discardLog())
+
+	if err == nil {
+		t.Fatal("want an error for an id that is not a channel")
+	}
+}
+
+// The two schedules differ by exactly this: how deep each channel is read. A normal run takes the
+// newest page; the weekly pass walks the lot.
+func TestRunReadsOnePageOfEachChannelByDefault(t *testing.T) {
+	var deep []string
+	for i := range 130 {
+		deep = append(deep, fmt.Sprintf("vid%03d", i))
+	}
+	api := newFake(nil)
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", deep, time.Hour)
+
+	res, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels:   []string{"UCoH2qJSyODQpBKsK63Moc6Q"},
+		MaxInserts: 1000,
+	}), discardLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := api.listed["UUoH2qJSyODQpBKsK63Moc6Q"]; got != 1 {
+		t.Errorf("read %d pages of the uploads playlist, want 1", got)
+	}
+	if res.Candidates != 50 {
+		t.Errorf("candidates = %d, want the newest 50", res.Candidates)
+	}
+}
+
+func TestFullReconcileWalksEveryPage(t *testing.T) {
+	var deep []string
+	for i := range 130 {
+		deep = append(deep, fmt.Sprintf("vid%03d", i))
+	}
+	api := newFake(nil)
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", deep, time.Hour)
+
+	res, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels:      []string{"UCoH2qJSyODQpBKsK63Moc6Q"},
+		MaxInserts:    1000,
+		FullReconcile: true,
+	}), discardLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := api.listed["UUoH2qJSyODQpBKsK63Moc6Q"]; got != 3 {
+		t.Errorf("read %d pages of the uploads playlist, want 3", got)
+	}
+	if res.Candidates != 130 {
+		t.Errorf("candidates = %d, want all 130", res.Candidates)
+	}
+}
+
+// The target playlist is always read whole, on both schedules. A bounded read of it would leave
+// the ids it did not reach looking absent — and they would be added again.
+func TestRunAlwaysReadsTheWholeTargetPlaylist(t *testing.T) {
+	var existing []string
+	for i := range 120 {
+		existing = append(existing, fmt.Sprintf("have%03d", i))
+	}
+	api := newFake(existing)
+	api.durations = map[string]time.Duration{"have119": time.Hour}
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", []string{"have119"}, 0)
+
+	res, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels: []string{"UCoH2qJSyODQpBKsK63Moc6Q"},
+	}), discardLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if api.listed["PLtest"] != 3 {
+		t.Errorf("read %d pages of the target playlist, want all 3", api.listed["PLtest"])
+	}
+	if res.PlaylistSize != 120 {
+		t.Errorf("playlist size = %d, want 120", res.PlaylistSize)
+	}
+	if len(api.inserted) != 0 {
+		t.Errorf("re-added %v, which is on the last page of the playlist", api.inserted)
+	}
+}
+
 // The pre-read is the whole deduplication mechanism. Skipping it, or keying the diff on anything
-// the feed and the API disagree about, gives a playlist that grows a second copy of every video on
+// the two endpoints disagree about, gives a playlist that grows a second copy of every video on
 // every run — and the API reports every one of those inserts as a success.
 func TestRunIsIdempotentAcrossRuns(t *testing.T) {
-	durations := map[string]time.Duration{"long1": time.Hour, "long2": 90 * time.Minute}
-	pl := &fakePlaylist{durations: durations}
-	src := &fakeSource{byChannel: map[string][]string{"UC1": {"long1", "long2"}}}
-	o := opts(reconcile.Options{Channels: []string{"UC1"}})
+	api := newFake(nil)
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", []string{"long1", "long2"}, time.Hour)
+	o := opts(reconcile.Options{Channels: []string{"UCoH2qJSyODQpBKsK63Moc6Q"}})
 
 	for run := 1; run <= 3; run++ {
-		if _, err := reconcile.Run(t.Context(), pl, src, o, discardLog()); err != nil {
+		if _, err := reconcile.Run(t.Context(), api, o, discardLog()); err != nil {
 			t.Fatalf("run %d: %v", run, err)
 		}
 	}
 
-	if want := []string{"long1", "long2"}; !slices.Equal(pl.inserted, want) {
-		t.Errorf("after three runs the playlist got %v, want %v", pl.inserted, want)
+	if want := []string{"long1", "long2"}; !slices.Equal(api.inserted, want) {
+		t.Errorf("after three runs the playlist got %v, want %v", api.inserted, want)
 	}
 }
 
 func TestRunDryRunInsertsNothing(t *testing.T) {
-	pl := &fakePlaylist{durations: map[string]time.Duration{"long1": time.Hour}}
-	src := &fakeSource{byChannel: map[string][]string{"UC1": {"long1"}}}
+	api := newFake(nil)
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", []string{"long1"}, time.Hour)
 
-	res, err := reconcile.Run(t.Context(), pl, src, opts(reconcile.Options{
-		Channels: []string{"UC1"},
+	res, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels: []string{"UCoH2qJSyODQpBKsK63Moc6Q"},
 		DryRun:   true,
 	}), discardLog())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(pl.inserted) != 0 {
-		t.Errorf("dry run inserted %v", pl.inserted)
+	if len(api.inserted) != 0 {
+		t.Errorf("dry run inserted %v", api.inserted)
 	}
 	if res.Inserted != 1 {
 		t.Errorf("reported %d would-be inserts, want 1", res.Inserted)
 	}
-	if res.Units != 2*ytapi.CostList {
-		t.Errorf("units = %d, want %d: a dry run spends nothing on inserts", res.Units, 2*ytapi.CostList)
+	if want := 3 * ytapi.CostList; res.Units != want {
+		t.Errorf("units = %d, want %d: a dry run spends nothing on inserts", res.Units, want)
 	}
 }
 
 func TestRunHonoursTheInsertCap(t *testing.T) {
-	durations := map[string]time.Duration{}
 	var ids []string
 	for i := range 10 {
-		id := fmt.Sprintf("vid%02d", i)
-		ids = append(ids, id)
-		durations[id] = time.Hour
+		ids = append(ids, fmt.Sprintf("vid%02d", i))
 	}
-	pl := &fakePlaylist{durations: durations}
-	src := &fakeSource{byChannel: map[string][]string{"UC1": ids}}
+	api := newFake(nil)
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", ids, time.Hour)
 
-	res, err := reconcile.Run(t.Context(), pl, src, opts(reconcile.Options{
-		Channels:   []string{"UC1"},
+	res, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels:   []string{"UCoH2qJSyODQpBKsK63Moc6Q"},
 		MaxInserts: 3,
 	}), discardLog())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(pl.inserted) != 3 {
-		t.Errorf("inserted %d, want 3", len(pl.inserted))
+	if len(api.inserted) != 3 {
+		t.Errorf("inserted %d, want 3", len(api.inserted))
 	}
 	if res.Deferred != 7 {
 		t.Errorf("deferred = %d, want 7", res.Deferred)
@@ -253,19 +474,17 @@ func TestRunHonoursTheInsertCap(t *testing.T) {
 // A full playlist is terminal but not a failure: nothing about retrying or waiting changes it, and
 // a crash loop would bury the one line that says what happened.
 func TestRunStopsCleanlyOnAFullPlaylist(t *testing.T) {
-	pl := &fakePlaylist{
-		durations: map[string]time.Duration{"long1": time.Hour, "long2": time.Hour, "long3": time.Hour},
-		insertErr: func(videoID string) error {
-			if videoID == "long2" {
-				return fmt.Errorf("playlistItems.insert: %w: 403", ytapi.ErrPlaylistFull)
-			}
-			return nil
-		},
+	api := newFake(nil)
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", []string{"long1", "long2", "long3"}, time.Hour)
+	api.insertErr = func(videoID string) error {
+		if videoID == "long2" {
+			return fmt.Errorf("playlistItems.insert: %w: 403", ytapi.ErrPlaylistFull)
+		}
+		return nil
 	}
-	src := &fakeSource{byChannel: map[string][]string{"UC1": {"long1", "long2", "long3"}}}
 
-	res, err := reconcile.Run(t.Context(), pl, src, opts(reconcile.Options{
-		Channels: []string{"UC1"},
+	res, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels: []string{"UCoH2qJSyODQpBKsK63Moc6Q"},
 	}), discardLog())
 
 	if err != nil {
@@ -274,8 +493,8 @@ func TestRunStopsCleanlyOnAFullPlaylist(t *testing.T) {
 	if !res.PlaylistFull {
 		t.Error("result does not record that the playlist is full")
 	}
-	if want := []string{"long1"}; !slices.Equal(pl.inserted, want) {
-		t.Errorf("inserted %v, want %v: the run stops at the refusal", pl.inserted, want)
+	if want := []string{"long1"}; !slices.Equal(api.inserted, want) {
+		t.Errorf("inserted %v, want %v: the run stops at the refusal", api.inserted, want)
 	}
 	if res.Deferred != 2 {
 		t.Errorf("deferred = %d, want 2", res.Deferred)
@@ -283,16 +502,14 @@ func TestRunStopsCleanlyOnAFullPlaylist(t *testing.T) {
 }
 
 func TestRunFailsOnQuotaExceeded(t *testing.T) {
-	pl := &fakePlaylist{
-		durations: map[string]time.Duration{"long1": time.Hour},
-		insertErr: func(string) error {
-			return fmt.Errorf("playlistItems.insert: %w: 403", ytapi.ErrQuotaExceeded)
-		},
+	api := newFake(nil)
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", []string{"long1"}, time.Hour)
+	api.insertErr = func(string) error {
+		return fmt.Errorf("playlistItems.insert: %w: 403", ytapi.ErrQuotaExceeded)
 	}
-	src := &fakeSource{byChannel: map[string][]string{"UC1": {"long1"}}}
 
-	_, err := reconcile.Run(t.Context(), pl, src, opts(reconcile.Options{
-		Channels: []string{"UC1"},
+	_, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels: []string{"UCoH2qJSyODQpBKsK63Moc6Q"},
 	}), discardLog())
 
 	if !errors.Is(err, ytapi.ErrQuotaExceeded) {
@@ -301,82 +518,103 @@ func TestRunFailsOnQuotaExceeded(t *testing.T) {
 }
 
 // A playlist that cannot be read is not a playlist with nothing in it. Continuing would treat
-// every video on every channel as new.
+// every video on every channel as new — and discovery now runs through the same endpoint, so the
+// call that fails here is the call the whole run depends on twice over.
 func TestRunRefusesToProceedWithoutThePreRead(t *testing.T) {
-	pl := &fakePlaylist{listErr: errors.New("network is unreachable")}
-	src := &fakeSource{byChannel: map[string][]string{"UC1": {"long1"}}}
+	api := newFake(nil)
+	api.listErr = errors.New("network is unreachable")
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", []string{"long1"}, time.Hour)
 
-	_, err := reconcile.Run(t.Context(), pl, src, opts(reconcile.Options{
-		Channels: []string{"UC1"},
+	_, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels: []string{"UCoH2qJSyODQpBKsK63Moc6Q"},
 	}), discardLog())
 
 	if err == nil {
 		t.Fatal("want the run to fail when the playlist cannot be read")
 	}
-	if len(pl.inserted) != 0 {
-		t.Errorf("inserted %v without knowing what is already there", pl.inserted)
+	if len(api.inserted) != 0 {
+		t.Errorf("inserted %v without knowing what is already there", api.inserted)
 	}
 }
 
 // One unreadable channel costs that channel's videos, not the run — but the run still ends in an
-// error, so a feed that has been failing all week is visible rather than merely quiet.
+// error, so a channel that has been failing all week is visible rather than merely quiet.
 func TestRunReportsAnUnreadableChannelAndKeepsGoing(t *testing.T) {
-	pl := &fakePlaylist{durations: map[string]time.Duration{"long1": time.Hour}}
-	src := &fakeSource{err: errors.New("feed returned 404 Not Found")}
+	api := &failingChannels{fakeAPI: newFake(nil), bad: "UU1aaaaaaaaaaaaaaaaaaaaa"}
+	api.channel("UC1aaaaaaaaaaaaaaaaaaaaa", []string{"lost1"}, time.Hour)
+	api.channel("UC2bbbbbbbbbbbbbbbbbbbbb", []string{"long1"}, time.Hour)
 
-	_, err := reconcile.Run(t.Context(), pl, src, opts(reconcile.Options{
-		Channels: []string{"UC1", "UC2"},
+	res, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels: []string{"UC1aaaaaaaaaaaaaaaaaaaaa", "UC2bbbbbbbbbbbbbbbbbbbbb"},
 	}), discardLog())
 
 	if err == nil {
 		t.Fatal("want the run to end in an error")
 	}
+	if want := []string{"long1"}; !slices.Equal(api.inserted, want) {
+		t.Errorf("inserted %v, want %v: the readable channel is still reconciled", api.inserted, want)
+	}
+	if res.Inserted != 1 {
+		t.Errorf("inserted = %d, want 1", res.Inserted)
+	}
+}
+
+// failingChannels fails one playlist and serves the rest, which the plain fake cannot express.
+type failingChannels struct {
+	*fakeAPI
+	bad string
+}
+
+func (f *failingChannels) PlaylistVideoIDs(ctx context.Context, playlistID string, maxPages int) ([]string, int, error) {
+	if playlistID == f.bad {
+		return nil, 1, errors.New("playlistNotFound")
+	}
+	return f.fakeAPI.PlaylistVideoIDs(ctx, playlistID, maxPages)
 }
 
 // videos.list takes at most fifty ids. Sending fifty-one is a 400 for the whole batch, so the
-// batching is the difference between a first run working and a first run failing.
+// batching is the difference between a full pass working and a full pass failing.
 func TestRunBatchesDurationLookups(t *testing.T) {
-	durations := map[string]time.Duration{}
 	var ids []string
 	for i := range 120 {
-		id := fmt.Sprintf("vid%03d", i)
-		ids = append(ids, id)
-		durations[id] = time.Hour
+		ids = append(ids, fmt.Sprintf("vid%03d", i))
 	}
-	pl := &fakePlaylist{durations: durations}
-	src := &fakeSource{byChannel: map[string][]string{"UC1": ids}}
+	api := newFake(nil)
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", ids, time.Hour)
 
-	res, err := reconcile.Run(t.Context(), pl, src, opts(reconcile.Options{
-		Channels:   []string{"UC1"},
-		MaxInserts: 1000,
+	res, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels:      []string{"UCoH2qJSyODQpBKsK63Moc6Q"},
+		MaxInserts:    1000,
+		FullReconcile: true,
 	}), discardLog())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if pl.durationCalls != 3 {
-		t.Errorf("made %d videos.list calls for 120 ids, want 3", pl.durationCalls)
+	if api.durationCalls != 3 {
+		t.Errorf("made %d videos.list calls for 120 ids, want 3", api.durationCalls)
 	}
 	if res.InBand != 120 {
 		t.Errorf("in band = %d, want 120", res.InBand)
 	}
 }
 
-// A video the API does not return — deleted, private, region-blocked between the feed and the
+// A video the API does not return — deleted, private, region-blocked between the listing and the
 // lookup — has no duration, and a missing duration must not read as zero.
 func TestRunSkipsVideosTheAPIDoesNotReturn(t *testing.T) {
-	pl := &fakePlaylist{durations: map[string]time.Duration{"long1": time.Hour}}
-	src := &fakeSource{byChannel: map[string][]string{"UC1": {"long1", "vanished"}}}
+	api := newFake(nil)
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", []string{"long1", "vanished"}, time.Hour)
+	delete(api.durations, "vanished")
 
-	res, err := reconcile.Run(t.Context(), pl, src, opts(reconcile.Options{
-		Channels: []string{"UC1"},
+	res, err := reconcile.Run(t.Context(), api, opts(reconcile.Options{
+		Channels: []string{"UCoH2qJSyODQpBKsK63Moc6Q"},
 	}), discardLog())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if want := []string{"long1"}; !slices.Equal(pl.inserted, want) {
-		t.Errorf("inserted %v, want %v", pl.inserted, want)
+	if want := []string{"long1"}; !slices.Equal(api.inserted, want) {
+		t.Errorf("inserted %v, want %v", api.inserted, want)
 	}
 	if res.InBand != 1 {
 		t.Errorf("in band = %d, want 1", res.InBand)
