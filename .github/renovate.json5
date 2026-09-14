@@ -1,0 +1,51 @@
+{
+  // Renovate replaces Dependabot: one bot, one config. Delivered by the Mend-hosted Renovate app.
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+
+  extends: ['config:recommended'],
+
+  semanticCommits: 'enabled',
+  dependencyDashboard: true,
+  labels: ['dependencies'],
+
+  postUpdateOptions: ['gomodTidy'],
+
+  // Off by default in Renovate; the hook revs in .pre-commit-config.yaml drift like any other pin.
+  'pre-commit': {
+    enabled: true,
+  },
+
+  packageRules: [
+    {
+      // Anything that reaches the image is a `fix`: release-please ignores `chore`/`build`, so a
+      // dependency bump typed that way would sit in main and never ship.
+      matchManagers: ['gomod', 'dockerfile'],
+      semanticCommitType: 'fix',
+    },
+    {
+      // Go is pinned in mise.toml, go.mod and the Dockerfile build image; they must move together.
+      matchPackageNames: ['go', 'golang'],
+      groupName: 'go toolchain',
+      semanticCommitType: 'fix',
+    },
+    {
+      matchManagers: ['gomod'],
+      matchUpdateTypes: ['minor', 'patch', 'digest'],
+      groupName: 'go modules',
+    },
+    {
+      matchManagers: ['github-actions'],
+      groupName: 'github actions',
+      semanticCommitType: 'ci',
+    },
+    {
+      matchManagers: ['pre-commit', 'mise'],
+      excludePackageNames: ['go'],
+      groupName: 'dev tooling',
+    },
+    {
+      matchUpdateTypes: ['major'],
+      addLabels: ['major-upgrade'],
+    },
+  ],
+}
