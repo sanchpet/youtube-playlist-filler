@@ -57,27 +57,39 @@ func run(ctx context.Context, args []string, log *slog.Logger) error {
 		return fmt.Errorf("youtube service: %w", err)
 	}
 
-	log.Info("run starting",
-		"playlist", cfg.PlaylistID, "channels", len(cfg.Channels),
-		"band", fmt.Sprintf("[%s, %s]", cfg.MinDuration, cfg.MaxDuration),
+	targets := make([]reconcile.Options, 0, len(cfg.Targets))
+	for _, t := range cfg.Targets {
+		log.Info("target configured",
+			"target", t.Name, "playlist", t.PlaylistID, "channels", len(t.Channels),
+			"band", fmt.Sprintf("[%s, %s]", t.MinDuration, t.MaxDuration))
+		targets = append(targets, reconcile.Options{
+			Name:          t.Name,
+			PlaylistID:    t.PlaylistID,
+			Channels:      t.Channels,
+			Min:           t.MinDuration,
+			Max:           t.MaxDuration,
+			DryRun:        cfg.DryRun,
+			FullReconcile: cfg.FullReconcile,
+		})
+	}
+	log.Info("run starting", "targets", len(targets),
 		"max_inserts", cfg.MaxInserts, "dry_run", cfg.DryRun, "full_reconcile", cfg.FullReconcile)
 
-	res, err := reconcile.Run(ctx, ytapi.New(svc, log), reconcile.Options{
-		PlaylistID:    cfg.PlaylistID,
-		Channels:      cfg.Channels,
-		Min:           cfg.MinDuration,
-		Max:           cfg.MaxDuration,
-		MaxInserts:    cfg.MaxInserts,
-		DryRun:        cfg.DryRun,
-		FullReconcile: cfg.FullReconcile,
-	}, log)
+	results, err := reconcile.RunAll(ctx, ytapi.New(svc, log), targets, cfg.MaxInserts, log)
 
-	// The summary is logged whether or not the run failed: a partial run has still spent quota and
-	// still changed the playlist, and that is exactly when knowing how much matters.
-	log.Info("run finished",
-		"playlist_size", res.PlaylistSize, "candidates", res.Candidates, "in_band", res.InBand,
-		"inserted", res.Inserted, "deferred", res.Deferred, "playlist_full", res.PlaylistFull,
-		"dry_run", res.DryRun, "estimated_units", res.Units, "daily_quota", dailyQuota)
+	// The summaries are logged whether or not the run failed: a partial run has still spent quota
+	// and still changed the playlist, and that is exactly when knowing how much matters.
+	var inserted, units int
+	for i, res := range results {
+		log.Info("target finished", "target", targets[i].Name,
+			"playlist_size", res.PlaylistSize, "candidates", res.Candidates, "in_band", res.InBand,
+			"inserted", res.Inserted, "deferred", res.Deferred, "playlist_full", res.PlaylistFull,
+			"dry_run", res.DryRun, "estimated_units", res.Units)
+		inserted += res.Inserted
+		units += res.Units
+	}
+	log.Info("run finished", "targets", len(results), "inserted", inserted,
+		"dry_run", cfg.DryRun, "estimated_units", units, "daily_quota", dailyQuota)
 
 	return err
 }
