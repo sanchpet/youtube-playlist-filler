@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/sanchpet/youtube-playlist-filler/compare/v0.1.0...v0.2.0) (2026-09-14)
+
+
+### Features
+
+* maintain several playlists from one run ([#6](https://github.com/sanchpet/youtube-playlist-filler/issues/6)) ([8080ffd](https://github.com/sanchpet/youtube-playlist-filler/commit/8080ffd4ca9a6ba4f62e4558b7ac5c4073414f98))
+
+
+### Bug Fixes
+
+* **deps:** update Go module dependencies ([#5](https://github.com/sanchpet/youtube-playlist-filler/issues/5)) ([10f1267](https://github.com/sanchpet/youtube-playlist-filler/commit/10f1267667185ab6d405c269d12f83077775c96f))
+
 ## 0.1.0 (2026-09-04)
 
 
