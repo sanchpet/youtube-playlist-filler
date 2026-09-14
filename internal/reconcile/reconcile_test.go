@@ -620,3 +620,75 @@ func TestRunSkipsVideosTheAPIDoesNotReturn(t *testing.T) {
 		t.Errorf("in band = %d, want 1", res.InBand)
 	}
 }
+
+// twoTargets is a fake holding two empty playlists, each fed by its own channel of long videos.
+func twoTargets(perChannel int) (*fakeAPI, []reconcile.Options) {
+	api := &fakeAPI{playlists: map[string][]string{"PLa": nil, "PLb": nil}, durations: map[string]time.Duration{}}
+	var a, b []string
+	for i := range perChannel {
+		a = append(a, fmt.Sprintf("a%02d", i))
+		b = append(b, fmt.Sprintf("b%02d", i))
+	}
+	api.channel("UCoH2qJSyODQpBKsK63Moc6Q", a, time.Hour)
+	api.channel("UCArcuj2cwzXsCZVcdsAEIKQ", b, time.Hour)
+	return api, []reconcile.Options{
+		{Name: "a", PlaylistID: "PLa", Channels: []string{"UCoH2qJSyODQpBKsK63Moc6Q"}, Min: minD, Max: maxD},
+		{Name: "b", PlaylistID: "PLb", Channels: []string{"UCArcuj2cwzXsCZVcdsAEIKQ"}, Min: minD, Max: maxD},
+	}
+}
+
+// Every target spends the same OAuth client's quota, so the fuse has to be one number across all of
+// them — two playlists with a fuse of a hundred each would be the entire day.
+func TestRunAllSharesOneInsertBudget(t *testing.T) {
+	api, targets := twoTargets(3)
+
+	results, err := reconcile.RunAll(t.Context(), api, targets, 4, discardLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := len(api.playlists["PLa"]); got != 3 {
+		t.Errorf("first target got %d inserts, want 3", got)
+	}
+	if got := len(api.playlists["PLb"]); got != 1 {
+		t.Errorf("second target got %d inserts, want the 1 left in the budget", got)
+	}
+	if results[1].Deferred != 2 {
+		t.Errorf("second target deferred %d, want 2", results[1].Deferred)
+	}
+}
+
+func TestRunAllKeepsGoingPastAFailedTarget(t *testing.T) {
+	api, targets := twoTargets(1)
+	api.insertErr = func(videoID string) error {
+		if videoID == "a00" {
+			return errors.New("backend error")
+		}
+		return nil
+	}
+
+	results, err := reconcile.RunAll(t.Context(), api, targets, 10, discardLog())
+
+	if err == nil || !strings.Contains(err.Error(), "target a") {
+		t.Errorf("got %v, want the failure attributed to target a", err)
+	}
+	if len(results) != 2 || !slices.Equal(api.playlists["PLb"], []string{"b00"}) {
+		t.Errorf("second target was not reconciled after the first failed: %v", api.playlists["PLb"])
+	}
+}
+
+func TestRunAllStopsOnQuotaExceeded(t *testing.T) {
+	api, targets := twoTargets(1)
+	api.insertErr = func(string) error {
+		return fmt.Errorf("playlistItems.insert: %w: 403", ytapi.ErrQuotaExceeded)
+	}
+
+	results, err := reconcile.RunAll(t.Context(), api, targets, 10, discardLog())
+
+	if !errors.Is(err, ytapi.ErrQuotaExceeded) {
+		t.Fatalf("got %v, want ErrQuotaExceeded", err)
+	}
+	if len(results) != 1 || api.listed["PLb"] != 0 {
+		t.Errorf("second target was read after the quota ran out (%d results, %d pages)", len(results), api.listed["PLb"])
+	}
+}

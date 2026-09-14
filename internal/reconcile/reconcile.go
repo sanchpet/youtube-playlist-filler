@@ -42,6 +42,8 @@ type API interface {
 
 // Options is one run.
 type Options struct {
+	// Name labels the target in logs and errors when a run covers more than one.
+	Name       string
 	PlaylistID string
 	Channels   []string
 
@@ -198,6 +200,30 @@ func Run(ctx context.Context, api API, opts Options, log *slog.Logger) (Result, 
 	}
 
 	return res, errors.Join(sourceErrs...)
+}
+
+// RunAll reconciles each target in the order given, against one insert budget.
+//
+// The budget is shared because the quota is: every target spends the same OAuth client's day, so a
+// fuse per target would multiply the worst case by the number of playlists. A failing target does
+// not stop the ones after it, except on an exhausted quota, where every further call would fail the
+// same way. Each target's MaxInserts is overwritten with what is left of the budget.
+func RunAll(ctx context.Context, api API, targets []Options, budget int, log *slog.Logger) ([]Result, error) {
+	results := make([]Result, 0, len(targets))
+	var errs []error
+	for _, t := range targets {
+		t.MaxInserts = budget
+		res, err := Run(ctx, api, t, log.With("target", t.Name))
+		results = append(results, res)
+		budget -= res.Inserted
+		if err != nil {
+			errs = append(errs, fmt.Errorf("target %s: %w", t.Name, err))
+			if errors.Is(err, ytapi.ErrQuotaExceeded) {
+				break
+			}
+		}
+	}
+	return results, errors.Join(errs...)
 }
 
 // discover lists a channel's recent uploads through its auto-generated uploads playlist.

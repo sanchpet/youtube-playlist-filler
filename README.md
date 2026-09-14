@@ -93,7 +93,9 @@ separate allowance of only 100 calls a day, and the uploads playlist answers the
 the main budget.
 
 `-max-inserts` (default 100) is the fuse. It exists so a bug in the diff — one that decides every
-video is new — costs one capped run rather than the day. Each run logs `estimated_units`.
+video is new — costs one capped run rather than the day. It is one budget across all targets, spent
+in the order they are listed: every playlist draws on the same OAuth client's quota, so a fuse per
+target would multiply the worst case by the number of playlists. Each run logs `estimated_units`.
 
 ## Failure modes it handles by name
 
@@ -115,6 +117,7 @@ Flags win over environment; the environment is what the CronJob sets.
 
 | Env | Flag | Default |
 | --- | --- | --- |
+| `YT_TARGETS_FILE` | `-targets` | unset: a single target from the four settings below |
 | `YT_PLAYLIST_ID` | `-playlist` | `PLbkjH9B2w9JzHthzAcmAnJ4N7ymUQOyOC` |
 | `YT_CHANNEL_IDS` | `-channels` | the ten channels in `internal/config` |
 | `YT_MIN_DURATION` | `-min-duration` | `15m` |
@@ -131,6 +134,29 @@ fallback to the default, and so is an inverted band — it matches nothing, so t
 reports no candidates and looks exactly like a quiet week.
 
 `-dry-run` does everything except the inserts and logs what it would have added.
+
+### Several playlists
+
+A targets file names every playlist the run maintains, each with its own channels and band:
+
+```yaml
+targets:
+  - name: ambient
+    playlist: PLbkjH9B2w9JzHthzAcmAnJ4N7ymUQOyOC
+    channels:
+      - UCoH2qJSyODQpBKsK63Moc6Q # spiritual brother Sci-Fi
+  - name: piano
+    playlist: PL…
+    min_duration: 15m # omitted: 15m
+    max_duration: 3h30m # omitted: 3h
+    channels:
+      - UCtvGQztIvHC3jt-JY7a7bIQ # gullivior
+```
+
+It replaces `-playlist`, `-channels` and the band settings; setting any of them beside it is an
+error, not an override. Unknown keys, a repeated name and a playlist listed twice are refused too.
+Targets are reconciled in order; one that fails does not stop the rest, except on an exhausted
+quota.
 
 ## Auth
 
