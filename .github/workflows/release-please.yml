@@ -10,10 +10,9 @@ name: release-please
 # while the release chain looked healthy. Building here means the publish happens in the same run
 # that created the release, from an event a human caused.
 #
-# The PAT is what makes the release PR run checks at all: a pull request opened with GITHUB_TOKEN
-# does not trigger workflows, so it would sit there with no signal. It is NOT what makes the image
-# get published — that is the gated job below, and keeping the publish there is why a revoked or
-# expired PAT degrades this to "no checks on the release PR" instead of "releases stop shipping".
+# The token from the sanchpet-release-please GitHub App is what makes the release PR run checks at
+# all: a pull request opened with GITHUB_TOKEN does not trigger workflows, so it would sit there with
+# no signal. It is NOT what makes the image get published — that is the gated job below.
 on:
   push:
     branches: [main]
@@ -30,11 +29,16 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
       version: ${{ steps.release.outputs.version }}
     steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_PLEASE_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_KEY }}
       # Manifest mode: reads release-please-config.json + .release-please-manifest.json.
       - uses: googleapis/release-please-action@v5
         id: release
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
 
   image:
     needs: release-please
